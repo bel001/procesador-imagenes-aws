@@ -1,0 +1,22 @@
+# Dependencias de Node.js (Lambdas)
+node_modules/
+
+# Archivos de Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.terraform.lock.hcl
+
+# Archivos empaquetados para subir a AWS
+*.zip
+
+# Variables de entorno locales
+.env
