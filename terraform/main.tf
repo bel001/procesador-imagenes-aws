@@ -446,3 +446,102 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   batch_size              = 5
   function_response_types = ["ReportBatchItemFailures"]
 }
+# API GATEWAY HTTP API 
+
+# Crear la API
+resource "aws_apigatewayv2_api" "http_api" {
+  name          = "image-api-${var.environment}"
+  protocol_type = "HTTP"
+
+  # Configuración CORS exigida en el diagrama
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["POST"]
+    allow_headers = ["Content-Type"]
+  }
+}
+
+# Crear la Ruta
+resource "aws_apigatewayv2_route" "upload_route" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "POST /upload"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+}
+
+# Integrar la Ruta con la Lambda de Subida
+resource "aws_apigatewayv2_integration" "lambda_integration" {
+  api_id                 = aws_apigatewayv2_api.http_api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.upload_lambda.invoke_arn
+  payload_format_version = "2.0" 
+}
+
+# Dar permiso al API Gateway para ejecutar la Lambda
+resource "aws_lambda_permission" "api_gw_invoke" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.upload_lambda.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
+}
+
+# Crear el Stage de Despliegue con límites de seguridad (Throttling)
+resource "aws_apigatewayv2_stage" "default_stage" {
+  api_id      = aws_apigatewayv2_api.http_api.id
+  name        = "$default"
+  auto_deploy = true
+
+  # Throttling: Límite de 10,000 peticiones por segundo (según diagrama)
+  default_route_settings {
+    throttling_burst_limit = 10000
+    throttling_rate_limit  = 10000
+  }
+
+  # Configuración de Logs (Bitácora de accesos)
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api_gw_logs.arn
+    format          = "{ \"requestId\":\"$context.requestId\", \"ip\": \"$context.identity.sourceIp\", \"requestTime\":\"$context.requestTime\", \"httpMethod\":\"$context.httpMethod\",\"routeKey\":\"$context.routeKey\", \"status\":\"$context.status\",\"protocol\":\"$context.protocol\", \"responseLength\":\"$context.responseLength\" }"
+  }
+}
+
+# OBSERVABILITY (CloudWatch Logs & Alarms)
+# Log Groups para guardar la actividad de las Lambdas y el API Gateway
+# Retención de 14 días para ahorrar costos
+resource "aws_cloudwatch_log_group" "upload_logs" {
+  name              = "/aws/lambda/${aws_lambda_function.upload_lambda.function_name}"
+  retention_in_days = 14
+}
+
+resource "aws_cloudwatch_log_group" "crop_logs" {
+  name              = "/aws/lambda/${aws_lambda_function.crop_lambda.function_name}"
+  retention_in_days = 14
+}
+
+resource "aws_cloudwatch_log_group" "api_gw_logs" {
+  name              = "/aws/apigateway/image-api-${var.environment}"
+  retention_in_days = 14
+}
+
+# Sistema de Alerta para la Dead Letter Queue (DLQ)
+# Canal de notificaciones (Tema SNS)
+resource "aws_sns_topic" "dlq_alerts" {
+  name = "dlq-alerts-topic-${var.environment}"
+}
+
+# Alarma: Si llega aunque sea 1 mensaje de error a la DLQ, dispara una alerta
+resource "aws_cloudwatch_metric_alarm" "dlq_alarm" {
+  alarm_name          = "dlq-messages-alarm-${var.environment}"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Alarma que se dispara si hay mensajes defectuosos en la DLQ"
+  alarm_actions       = [aws_sns_topic.dlq_alerts.arn]
+  
+  dimensions = {
+    QueueName = aws_sqs_queue.image_dlq.name
+  }
+}
