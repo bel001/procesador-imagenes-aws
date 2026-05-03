@@ -198,3 +198,115 @@ resource "aws_vpc_endpoint" "sqs" {
 
   tags = { Name = "vpce-sqs-${var.environment}" }
 }
+# ALMACENAMIENTO DE IMÁGENES (Amazon S3)
+# Sufijo aleatorio (algo aletaorio creo que es por le nombre)
+resource "random_string" "suffix" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
+# Creación del Bucket
+resource "aws_s3_bucket" "images" {
+  bucket = "image-processor-${var.environment}-images-${random_string.suffix.result}"
+  tags   = { Name = "bucket-images-${var.environment}" }
+}
+
+# Bloqueo de Acceso Público 
+resource "aws_s3_bucket_public_access_block" "images_access" {
+  bucket                  = aws_s3_bucket.images.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Versionado 
+resource "aws_s3_bucket_versioning" "images_versioning" {
+  bucket = aws_s3_bucket.images.id
+  versioning_configuration { status = "Enabled" }
+}
+
+# Encriptación en reposo
+resource "aws_s3_bucket_server_side_encryption_configuration" "images_encryption" {
+  bucket = aws_s3_bucket.images.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Reglas de Ciclo de Vida
+resource "aws_s3_bucket_lifecycle_configuration" "images_lifecycle" {
+  bucket = aws_s3_bucket.images.id
+
+  # Las imágenes originales se borran al mes
+  rule {
+    id     = "expire-uploads-30-days"
+    status = "Enabled"
+    filter { prefix = "uploads/" }
+    expiration { days = 30 }
+  }
+
+  # Las imágenes procesadas se borran a los 3 meses
+  rule {
+    id     = "expire-processed-90-days"
+    status = "Enabled"
+    filter { prefix = "processed/" }
+    expiration { days = 90 }
+  }
+}
+# SISTEMA DE MENSAJERÍA Y TOLERANCIA A FALLOS (Amazon SQS)
+
+# Dead-Letter Queue (DLQ)
+# Retención de 14 días (1209600 segundos)
+resource "aws_sqs_queue" "image_dlq" {
+  name                      = "image-processor-${var.environment}-image-dlq"
+  message_retention_seconds = 1209600 
+  tags                      = { Name = "sqs-dlq-${var.environment}" }
+}
+
+# Cola Principal (Main Queue)
+resource "aws_sqs_queue" "image_queue" {
+  name                       = "image-processor-${var.environment}-image-queue"
+  visibility_timeout_seconds = 360   # 6x Lambda timeout
+  message_retention_seconds  = 86400 # 1 día
+  receive_wait_time_seconds  = 20    # Si no llega en 20 segunds seria ocmo pregunta ya llego? y el correo me responde no y asi 
+
+  # Redrive Policy: Si falla 3 veces, se va al DLQ
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.image_dlq.arn
+    maxReceiveCount     = 3
+  })
+
+  tags = { Name = "sqs-main-${var.environment}" }
+}
+
+# Permiso IAM para que S3 le escriba a la Cola Principal
+resource "aws_sqs_queue_policy" "allow_s3" {
+  queue_url = aws_sqs_queue.image_queue.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "s3.amazonaws.com" }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.image_queue.arn
+        Condition = { ArnEquals = { "aws:SourceArn" : aws_s3_bucket.images.arn } }
+      }
+    ]
+  })
+}
+
+# Evento: S3 le avisa a SQS cuando llega una imagen nueva a "upload"
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = aws_s3_bucket.images.id
+  queue {
+    queue_arn     = aws_sqs_queue.image_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+  }
+  depends_on = [aws_sqs_queue_policy.allow_s3] # Aseguramos que el permiso exista primero
+}
