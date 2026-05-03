@@ -168,7 +168,7 @@ resource "aws_security_group" "vpce_sqs_sg" {
   tags = { Name = "sg-vpce-sqs-${var.environment}" }
 }
 
-# 9. VPC ENDPOINTS (Para que el tráfico no salga a Internet)
+# VPC ENDPOINTS (Para que el tráfico no salga a Internet)
 # S3 Gateway Endpoint: Se ancla a las tablas de enrutamiento privadas
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
@@ -399,8 +399,8 @@ resource "aws_lambda_function" "upload_lambda" {
   filename      = "upload-lambda.zip" # Archivo dummy, luego subiremos el código real
   function_name = "upload-lambda-${var.environment}"
   role          = aws_iam_role.upload_role.arn
-  handler       = "index.handler"
-  runtime       = "nodejs20.x"
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.12"
   memory_size   = 256
   timeout       = 30
 
