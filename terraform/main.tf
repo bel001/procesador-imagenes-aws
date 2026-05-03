@@ -322,7 +322,7 @@ data "aws_iam_policy_document" "lambda_assume" {
   }
 }
 
-# 12.1 Rol para Upload-Lambda
+# Rol para Upload-Lambda
 resource "aws_iam_role" "upload_role" {
   name               = "upload-lambda-role-${var.environment}"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -338,7 +338,7 @@ resource "aws_iam_role_policy_attachment" "upload_vpc_access" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
-# Permiso estricto: Solo puede ESCRIBIR en la carpeta "uploads/"
+# Permiso estricto: Solo puede ESCRIBIR en la carpeta "upload"
 resource "aws_iam_role_policy" "upload_s3_policy" {
   name = "upload-s3-policy"
   role = aws_iam_role.upload_role.id
@@ -352,7 +352,7 @@ resource "aws_iam_role_policy" "upload_s3_policy" {
   })
 }
 
-# 12.2 Rol para Crop-Lambda
+# Rol para Crop-Lambda
 resource "aws_iam_role" "crop_role" {
   name               = "crop-lambda-role-${var.environment}"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -417,9 +417,9 @@ resource "aws_lambda_function" "upload_lambda" {
   }
 }
 
-# Crop Lambda (Memoria: 512 MB — Timeout: 60 s, según diagrama)
+# Crop Lambda
 resource "aws_lambda_function" "crop_lambda" {
-  filename      = "crop-lambda.zip" # Archivo dummy, luego subiremos el código real
+  filename      = "crop-lambda.zip" # Archivo de prueba, luego subir el código real
   function_name = "crop-lambda-${var.environment}"
   role          = aws_iam_role.crop_role.arn
   handler       = "index.handler"
