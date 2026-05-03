@@ -310,3 +310,139 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
   }
   depends_on = [aws_sqs_queue_policy.allow_s3] # Aseguramos que el permiso exista primero
 }
+# IAM: LEAST-PRIVILEGE ROLES (Seguridad)
+# Política base para permitir que las Lambdas asuman un rol
+data "aws_iam_policy_document" "lambda_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+# 12.1 Rol para Upload-Lambda
+resource "aws_iam_role" "upload_role" {
+  name               = "upload-lambda-role-${var.environment}"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+# Permisos básicos de ejecución y acceso a la VPC
+resource "aws_iam_role_policy_attachment" "upload_basic_exec" {
+  role       = aws_iam_role.upload_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+resource "aws_iam_role_policy_attachment" "upload_vpc_access" {
+  role       = aws_iam_role.upload_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# Permiso estricto: Solo puede ESCRIBIR en la carpeta "uploads/"
+resource "aws_iam_role_policy" "upload_s3_policy" {
+  name = "upload-s3-policy"
+  role = aws_iam_role.upload_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject"]
+      Resource = "${aws_s3_bucket.images.arn}/uploads/*"
+    }]
+  })
+}
+
+# 12.2 Rol para Crop-Lambda
+resource "aws_iam_role" "crop_role" {
+  name               = "crop-lambda-role-${var.environment}"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "crop_basic_exec" {
+  role       = aws_iam_role.crop_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+resource "aws_iam_role_policy_attachment" "crop_vpc_access" {
+  role       = aws_iam_role.crop_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# Permisos estrictos: Leer de "uploads/", Escribir en "processed/" y manejar la cola SQS
+resource "aws_iam_role_policy" "crop_custom_policy" {
+  name = "crop-custom-policy"
+  role = aws_iam_role.crop_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["s3:GetObject"],
+        Resource = "${aws_s3_bucket.images.arn}/uploads/*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["s3:PutObject"],
+        Resource = "${aws_s3_bucket.images.arn}/processed/*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"],
+        Resource = aws_sqs_queue.image_queue.arn
+      }
+    ]
+  })
+}
+
+# CÓMPUTO: AWS LAMBDAS
+# Upload Lambda
+resource "aws_lambda_function" "upload_lambda" {
+  filename      = "upload-lambda.zip" # Archivo dummy, luego subiremos el código real
+  function_name = "upload-lambda-${var.environment}"
+  role          = aws_iam_role.upload_role.arn
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  memory_size   = 256
+  timeout       = 30
+
+  # Se distribuye en las subredes privadas con su Security Group
+  vpc_config {
+    subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_group_ids = [aws_security_group.lambda_sg.id] 
+  }
+  environment {
+    variables = {
+      S3_BUCKET     = aws_s3_bucket.images.id
+      UPLOAD_PREFIX = "uploads/"
+    }
+  }
+}
+
+# Crop Lambda (Memoria: 512 MB — Timeout: 60 s, según diagrama)
+resource "aws_lambda_function" "crop_lambda" {
+  filename      = "crop-lambda.zip" # Archivo dummy, luego subiremos el código real
+  function_name = "crop-lambda-${var.environment}"
+  role          = aws_iam_role.crop_role.arn
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  memory_size   = 512
+  timeout       = 60
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_group_ids = [aws_security_group.lambda_sg.id]
+  }
+  environment {
+    variables = {
+      S3_BUCKET        = aws_s3_bucket.images.id
+      PROCESSED_PREFIX = "processed/"
+    }
+  }
+}
+
+# Conexión SQS -> Lambda (ESM trigger, batch size 5)
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  event_source_arn        = aws_sqs_queue.image_queue.arn
+  function_name           = aws_lambda_function.crop_lambda.arn
+  batch_size              = 5
+  function_response_types = ["ReportBatchItemFailures"]
+}
