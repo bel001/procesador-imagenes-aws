@@ -138,18 +138,37 @@ resource "aws_route_table_association" "private_b" {
 
 # SECURITY GROUPS (Cortafuegos virtuales)
 # Security Group para las Lambdas: Solo necesitan salida por HTTPS (443)
-resource "aws_security_group" "lambda_sg" {
-  name        = "lambda-sg-${var.environment}"
-  description = "Security Group para las Lambdas de subida y recorte"
+# Security Groups separados para Lambdas con salida restringida (Outbound: TCP 443)
+resource "aws_security_group" "upload_lambda_sg" {
+  name        = "upload-lambda-sg-${var.environment}"
+  description = "Security group para Upload Lambda"
   vpc_id      = aws_vpc.main.id
 
   egress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "Permitir trafico HTTPS solo hacia S3 y SQS Endpoints"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
+    security_groups = [aws_security_group.vpce_sqs_sg.id] 
   }
-  tags = { Name = "sg-lambda-${var.environment}" }
+  tags = { Name = "sg-upload-lambda-${var.environment}" }
+}
+
+resource "aws_security_group" "crop_lambda_sg" {
+  name        = "crop-lambda-sg-${var.environment}"
+  description = "Security group para Crop Lambda"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    description     = "Permitir trafico HTTPS solo hacia S3 y SQS Endpoints"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
+    security_groups = [aws_security_group.vpce_sqs_sg.id]
+  }
+  tags = { Name = "sg-crop-lambda-${var.environment}" }
 }
 
 # Security Group para el Endpoint de SQS: Solo acepta tráfico que venga de las Lambdas
@@ -162,8 +181,10 @@ resource "aws_security_group" "vpce_sqs_sg" {
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
-    security_groups = [aws_security_group.lambda_sg.id] 
-    # El tráfico debe venir del SG - Security Group de arriba
+    security_groups = [
+      aws_security_group.upload_lambda_sg.id,
+      aws_security_group.crop_lambda_sg.id
+    ]
   }
   tags = { Name = "sg-vpce-sqs-${var.environment}" }
 }
@@ -179,6 +200,22 @@ resource "aws_vpc_endpoint" "s3" {
     aws_route_table.private_a.id,
     aws_route_table.private_b.id
   ]
+  
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource  = "${aws_s3_bucket.images.arn}/*"
+      }
+    ]
+  })
+
   tags = { Name = "vpce-s3-${var.environment}" }
 }
 
@@ -407,7 +444,7 @@ resource "aws_lambda_function" "upload_lambda" {
   # Se distribuye en las subredes privadas con su Security Group
   vpc_config {
     subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-    security_group_ids = [aws_security_group.lambda_sg.id] 
+    security_group_ids = [aws_security_group.upload_lambda_sg.id] 
   }
   environment {
     variables = {
@@ -429,7 +466,7 @@ resource "aws_lambda_function" "crop_lambda" {
 
   vpc_config {
     subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-    security_group_ids = [aws_security_group.lambda_sg.id]
+    security_group_ids = [aws_security_group.crop_lambda_sg.id]
   }
   environment {
     variables = {
