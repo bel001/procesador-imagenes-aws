@@ -176,17 +176,25 @@ resource "aws_security_group" "vpce_sqs_sg" {
   name        = "vpce-sqs-sg-${var.environment}"
   description = "Security Group para el VPC Endpoint de SQS"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [
-      aws_security_group.upload_lambda_sg.id,
-      aws_security_group.crop_lambda_sg.id
-    ]
-  }
   tags = { Name = "sg-vpce-sqs-${var.environment}" }
+}
+
+resource "aws_security_group_rule" "vpce_sqs_ingress_upload" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.vpce_sqs_sg.id
+  source_security_group_id = aws_security_group.upload_lambda_sg.id
+}
+
+resource "aws_security_group_rule" "vpce_sqs_ingress_crop" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.vpce_sqs_sg.id
+  source_security_group_id = aws_security_group.crop_lambda_sg.id
 }
 
 # VPC ENDPOINTS (Para que el tráfico no salga a Internet)
