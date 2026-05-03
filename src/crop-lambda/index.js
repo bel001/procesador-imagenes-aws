@@ -19,18 +19,25 @@ exports.handler = async (event) => {
             const response = await s3.send(getCmd);
             const imageBytes = await response.Body.transformToByteArray();
 
-            // 2. Procesar con Sharp (40x40 y forzar a PNG)
+            // 2. Crear mascara SVG circular de 40x40
+            const circleSvg = `<svg width="40" height="40"><circle cx="20" cy="20" r="20" fill="white"/></svg>`;
+
+            // 3. Procesar con Sharp (Cover 40x40 + Mascara Circular + PNG Alfa)
             const processedBuffer = await sharp(Buffer.from(imageBytes))
-                .resize(40, 40)
+                .resize(40, 40, { fit: 'cover' })
+                .composite([{
+                    input: Buffer.from(circleSvg),
+                    blend: 'dest-in'
+                }])
                 .png()
                 .toBuffer();
 
-            // 3. Renombrar a "nombre_circular.png"
+            // 4. Renombrar
             const parsedPath = path.parse(originalKey);
             const filenameWithoutPrefix = parsedPath.name.replace("uploads/", "");
             const newKey = `${PROCESSED_PREFIX}${filenameWithoutPrefix}_circular.png`;
 
-            // 4. Subir imagen procesada
+            // 5. Subir imagen procesada
             const putCmd = new PutObjectCommand({
                 Bucket: BUCKET_NAME,
                 Key: newKey,
