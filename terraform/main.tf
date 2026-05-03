@@ -19,7 +19,7 @@ resource "aws_vpc" "main" {
 # SUBNETS PÚBLICAS (Texto fijo)
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, 1)
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
@@ -28,7 +28,7 @@ resource "aws_subnet" "public_a" {
 
 resource "aws_subnet" "public_b" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, 2)
   availability_zone       = data.aws_availability_zones.available.names[1]
   map_public_ip_on_launch = true
 
@@ -39,7 +39,7 @@ resource "aws_subnet" "public_b" {
 # SUBNETS PRIVADAS (Texto fijo)
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.11.0/24"
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, 11)
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = { Name = "private-subnet-a-${var.environment}" }
@@ -47,7 +47,7 @@ resource "aws_subnet" "private_a" {
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.12.0/24"
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, 12)
   availability_zone = data.aws_availability_zones.available.names[1]
 
   tags = { Name = "private-subnet-b-${var.environment}" }
@@ -444,8 +444,8 @@ resource "aws_lambda_function" "upload_lambda" {
   filename      = "upload-lambda.zip" # Archivo dummy, luego subiremos el código real
   function_name = "upload-lambda-${var.environment}"
   role          = aws_iam_role.upload_role.arn
-  handler       = "lambda_function.lambda_handler"
-  runtime       = "python3.12"
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
   memory_size   = 256
   timeout       = 30
 
