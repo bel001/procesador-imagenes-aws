@@ -135,3 +135,66 @@ resource "aws_route_table_association" "private_b" {
   subnet_id      = aws_subnet.private_b.id
   route_table_id = aws_route_table.private_b.id
 }
+
+# SECURITY GROUPS (Cortafuegos virtuales)
+# Security Group para las Lambdas: Solo necesitan salida por HTTPS (443)
+resource "aws_security_group" "lambda_sg" {
+  name        = "lambda-sg-${var.environment}"
+  description = "Security Group para las Lambdas de subida y recorte"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "sg-lambda-${var.environment}" }
+}
+
+# Security Group para el Endpoint de SQS: Solo acepta tráfico que venga de las Lambdas
+resource "aws_security_group" "vpce_sqs_sg" {
+  name        = "vpce-sqs-sg-${var.environment}"
+  description = "Security Group para el VPC Endpoint de SQS"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda_sg.id] 
+    # El tráfico debe venir del SG - Security Group de arriba
+  }
+  tags = { Name = "sg-vpce-sqs-${var.environment}" }
+}
+
+# 9. VPC ENDPOINTS (Para que el tráfico no salga a Internet)
+# S3 Gateway Endpoint: Se ancla a las tablas de enrutamiento privadas
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  
+  route_table_ids = [
+    aws_route_table.private_a.id,
+    aws_route_table.private_b.id
+  ]
+  tags = { Name = "vpce-s3-${var.environment}" }
+}
+
+# SQS Interface Endpoint: Se ancla a las subredes y usa un Security Group
+resource "aws_vpc_endpoint" "sqs" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.sqs"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+
+  subnet_ids = [
+    aws_subnet.private_a.id,
+    aws_subnet.private_b.id
+  ]
+  
+  security_group_ids = [aws_security_group.vpce_sqs_sg.id]
+
+  tags = { Name = "vpce-sqs-${var.environment}" }
+}
