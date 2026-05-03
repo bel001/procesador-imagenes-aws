@@ -1,59 +1,44 @@
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
 const sharp = require("sharp");
+const path = require("path");
 
-const s3Client = new S3Client({});
-
-// Función para leer el archivo de S3
-const streamToBuffer = (stream) => {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        stream.on("data", (chunk) => chunks.push(chunk));
-        stream.on("error", reject);
-        stream.on("end", () => resolve(Buffer.concat(chunks)));
-    });
-};
+const s3 = new S3Client({});
+const BUCKET_NAME = process.env.S3_BUCKET;
+const PROCESSED_PREFIX = process.env.PROCESSED_PREFIX || "processed/";
 
 exports.handler = async (event) => {
     for (const record of event.Records) {
-        try {
-            // Extraer datos del evento SQS -> S3
-            const messageBody = JSON.parse(record.body);
-            const s3Event = messageBody.Records[0];
-            
-            const sourceBucket = s3Event.s3.bucket.name;
-            const sourceKey = decodeURIComponent(s3Event.s3.object.key.replace(/\+/g, " "));
-            
-            const destBucket = process.env.S3_BUCKET;
-            const destPrefix = process.env.PROCESSED_PREFIX; // "processed/"
-            const fileName = sourceKey.split('/').pop();
-            const destKey = `${destPrefix}circular_${fileName}`;
+        const body = JSON.parse(record.body);
+        if (!body.Records) continue;
 
-            // Descargar la imagen
-            const getCmd = new GetObjectCommand({ Bucket: sourceBucket, Key: sourceKey });
-            const s3Response = await s3Client.send(getCmd);
-            const imageBuffer = await streamToBuffer(s3Response.Body);
+        for (const s3Record of body.Records) {
+            const originalKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, " "));
+            
+            // 1. Descargar imagen
+            const getCmd = new GetObjectCommand({ Bucket: BUCKET_NAME, Key: originalKey });
+            const response = await s3.send(getCmd);
+            const imageBytes = await response.Body.transformToByteArray();
 
-            // Recorte circular a 40x40 usando Sharp
-            const circleSvg = `<svg width="40" height="40"><circle cx="20" cy="20" r="20" /></svg>`;
-            const processedBuffer = await sharp(imageBuffer)
+            // 2. Procesar con Sharp (40x40 y forzar a PNG)
+            const processedBuffer = await sharp(Buffer.from(imageBytes))
                 .resize(40, 40)
-                .composite([{ input: Buffer.from(circleSvg), blend: 'dest-in' }])
                 .png()
                 .toBuffer();
 
-            // Guardar la imagen procesada
+            // 3. Renombrar a "nombre_circular.png"
+            const parsedPath = path.parse(originalKey);
+            const filenameWithoutPrefix = parsedPath.name.replace("uploads/", "");
+            const newKey = `${PROCESSED_PREFIX}${filenameWithoutPrefix}_circular.png`;
+
+            // 4. Subir imagen procesada
             const putCmd = new PutObjectCommand({
-                Bucket: destBucket,
-                Key: destKey,
+                Bucket: BUCKET_NAME,
+                Key: newKey,
                 Body: processedBuffer,
                 ContentType: "image/png"
             });
-            await s3Client.send(putCmd);
-
-        } catch (error) {
-            console.error("Fallo al procesar imagen:", error);
-            // Estrategia de Failover (Tolerancia a fallos)
-            throw error; 
+            await s3.send(putCmd);
         }
     }
+    return { statusCode: 200, body: "Procesado correctamente" };
 };
